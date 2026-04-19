@@ -7,7 +7,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 import torch
 import torch.nn as nn
 from sklearn.metrics import classification_report, f1_score
@@ -24,11 +23,16 @@ TARGET_BRIGHTNESS = 0.5
 GAMMA_MIN = 0.7
 GAMMA_MAX = 1.5
 ROTATION_ANGLE = 20.0
+DEFAULT_PTH_MODELS = ("resnet50_furtherPreprocessing_1.pth", "resnet50_final.pth")
+DEFAULT_KERAS_MODEL = "final_model.keras"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate a saved .keras or .pth model on the same held-out test split used in training."
+        description=(
+            "Evaluate a saved .keras or .pth model on the same held-out test split used in training. "
+            "If --model-path is omitted, the first existing checkpoint in models/ is used."
+        )
     )
     parser.add_argument(
         "--project-dir",
@@ -40,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         "--model-path",
         type=Path,
         default=None,
-        help="Path to a .keras or .pth model file.",
+        help="Path to a .keras or .pth model file. If omitted, an existing checkpoint is auto-selected.",
     )
     parser.add_argument(
         "--fold",
@@ -67,13 +71,19 @@ def resolve_model_path(project_dir: Path, model_path: Path | None, fold: int | N
             raise ValueError("--fold must be >= 1")
         return (project_dir / "models" / f"fold_{fold}_model.keras").resolve()
 
-    return (project_dir / "models" / "final_model.keras").resolve()
+    model_dir = project_dir / "models"
+    candidates = [*(model_dir / name for name in DEFAULT_PTH_MODELS), model_dir / DEFAULT_KERAS_MODEL]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    tried = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"No default checkpoint found. Looked for: {tried}")
 
 
 def set_seed(seed: int = RANDOM_STATE) -> None:
     random.seed(seed)
     np.random.seed(seed)
-    tf.random.set_seed(seed)
 
 
 def create_training_dataframe(train_root: Path) -> pd.DataFrame:
@@ -244,6 +254,15 @@ def evaluate_saved_model(project_dir: Path, model_path: Path, batch_size: int) -
 
     suffix = model_path.suffix.lower()
     if suffix == ".keras":
+        try:
+            import tensorflow as tf
+        except ImportError as exc:  # pragma: no cover - depends on environment
+            raise ImportError(
+                "TensorFlow is required only for .keras evaluation, but it is not installed."
+            ) from exc
+
+        tf.random.set_seed(RANDOM_STATE)
+
         label_encoder = LabelEncoder()
         label_encoder.fit(train_df["label"])
         y_test = label_encoder.transform(test_part["label"])
