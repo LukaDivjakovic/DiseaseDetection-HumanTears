@@ -6,14 +6,19 @@ HackKosice project for UPJS
 1. Create a virtual environment (python version 3.12)
 2. Activate the virtual environment
 3. Run `pip install -r requirements.txt`
-4. Run `python solution.py`
+4. Run inference with the trained ResNet50 model:
 
-## Evaluate saved EfficientNet models
+   ```
+   python solution.py <path_to_test_set>
+   ```
 
-Run evaluation on the same held-out test split used in `solution_efficientnet.py`.
+   Where `<path_to_test_set>` is either:
+   - a directory containing `.bmp` images (searched recursively), or
+   - a path to a single `.bmp` image.
 
-```powershell
-python evaluate_saved_model.py
-python evaluate_saved_model.py --fold 1
-python evaluate_saved_model.py --model-path models/final_model.keras
-```
+   The script loads the trained model from `models/resnet50_final.pth` and
+   prints one line per image in the format:
+
+   ```
+   <picture path>: <predicted class>
+   ```

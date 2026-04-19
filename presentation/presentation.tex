@@ -1,0 +1,228 @@
+\documentclass[aspectratio=169]{beamer}
+
+\usetheme{Madrid}
+\usecolortheme{seahorse}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{array}
+\usepackage{xcolor}
+
+\title[Tear Desiccate Classification]{Analysis of Human Tear Desiccate\\ based on Data Analysis and Machine Learning}
+\subtitle{HackKošice 2026 -- Pavol Jozef Šafárik University in Košice track}
+\author{Luka Divjakovi\'c \and Veselin Roganovi\'c}
+\institute{HackKošice}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+    \titlepage
+\end{frame}
+
+\begin{frame}{Outline}
+    \tableofcontents
+\end{frame}
+
+% =====================================================================
+\section{Data Description and Preprocessing}
+% =====================================================================
+
+\begin{frame}{Dataset overview}
+    \begin{itemize}
+        \item Provided dataset: \textbf{5 folders}, one per class (chronic condition / healthy).
+        \item Each folder contains \textbf{images} (\texttt{.bmp}) and \textbf{raw data} files.
+        \item Dataset is \textbf{relatively small} -- we searched online for additional
+              public data without success, but studied several scientific papers on the topic.
+        \item After exploring both modalities, we decided to use \textbf{only the \texttt{.bmp} images}.
+        \item Pipeline: we store each image's \textbf{file path} and the \textbf{class label}
+              (from its parent folder) in a DataFrame; the actual image is loaded on demand
+              during training / prediction.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Patterns observed per class}
+    \small
+    \begin{itemize}
+        \item \textbf{Diabetes}: dry--leaf-like branching, many white dots, flake-like structures,
+              sharp-angled straight lines.
+        \item \textbf{Glaucoma}: unusual dots, droplets and spiky objects; mostly smooth curved lines,
+              fewer sharp angles.
+        \item \textbf{Sclerosis}: similar to diabetes but dots are more spaced; some regions are entirely white,
+              others look flaky but are in fact clusters of dots spread everywhere.
+        \item \textbf{Dry eye}: even more similar to diabetes; extremely regular dot groupings forming
+              cypress-like shapes; very clean, well-defined clusters.
+        \item \textbf{Healthy}: similar to glaucoma; more curved lines than dot clusters, occasional bright
+              regions, cypress-like line patterns without visibly separated dots.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Data quality issues}
+    \begin{itemize}
+        \item A portion of images are \textbf{zoomed in / at different scales} -- may mislead the model.
+        \item Presence of \textbf{duplicates and near-duplicates}.
+        \item Some images are visibly \textbf{damaged / low quality}.
+        \item Every image contains a \textbf{white frame and scale/metadata overlay}.
+    \end{itemize}
+    \vspace{0.5em}
+    $\Rightarrow$ We removed a subset of clear outliers so the model can \textbf{generalize better}.
+\end{frame}
+
+\begin{frame}{Preprocessing pipeline}
+    \begin{enumerate}
+        \item \textbf{ROI crop}: remove the white frame and the scale/metadata overlay.
+        \item \textbf{Grayscale conversion}: color carries little signal, and our algorithms
+              performed better on grayscale.
+        \item \textbf{CLAHE contrast normalization}: enhances local contrast and makes
+              fine-grained tear-film patterns more discriminative.
+        \item \textbf{Data augmentation -- rotations}: class patterns are not direction-specific,
+              so rotating each image produces valid extra training samples and enlarges the dataset.
+        \item \textbf{Outlier filtering}: drop visibly damaged / duplicate images before training.
+    \end{enumerate}
+\end{frame}
+
+% =====================================================================
+\section{Algorithms and Methods}
+% =====================================================================
+
+\begin{frame}{Evaluation protocol}
+    \begin{itemize}
+        \item \textbf{Train / test split}: 80\,/\,20, stratified by class.
+        \item \textbf{Cross-validation}: 5-fold CV on the \textbf{train} portion for model selection
+              and hyper-parameter tuning.
+        \item \textbf{Test set}: used only \textbf{once}, after we are happy with the model on CV,
+              to obtain the final score.
+        \item \textbf{Metric}: weighted F1-score (as required by the challenge).
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Classical approach I -- HOG + SVM / KNN}
+    \begin{itemize}
+        \item Images clearly contain \textbf{oriented gradient patterns} (lines, dendritic
+              shapes, dot clusters).
+        \item \textbf{Histogram of Oriented Gradients (HOG)} captures local edge
+              directions in cells and pools them into a feature vector.
+        \item The HOG descriptor is then fed into classical classifiers:
+              \begin{itemize}
+                  \item \textbf{SVM} with RBF/linear kernel,
+                  \item \textbf{KNN} as a simple non-parametric baseline.
+              \end{itemize}
+        \item Motivation: interpretable, fast, and a natural fit for the type of
+              texture/gradient patterns visible in the tear images.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Classical approach II -- KMeans ($K{=}3$) + SVM / KNN}
+    \begin{itemize}
+        \item Visually, most images contain roughly \textbf{3 distinct regions}:
+              \begin{itemize}
+                  \item background,
+                  \item dots / main figure,
+                  \item bright white dots.
+              \end{itemize}
+        \item We use \textbf{KMeans with $K{=}3$} on pixel intensities to segment
+              the image into these regions.
+        \item Statistics of the resulting clusters (area ratios, intensities,
+              spatial descriptors) form a compact feature vector.
+        \item This vector is classified by \textbf{SVM} or \textbf{KNN}.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Deep learning -- Transfer learning with pretrained CNNs}
+    \begin{itemize}
+        \item The dataset is too small to train a CNN from scratch.
+        \item We use \textbf{ImageNet-pretrained} backbones, replace the classification head,
+              and \textbf{unfreeze the last few blocks} for fine-tuning.
+        \item Two-stage training: \textbf{head only}, then \textbf{partial fine-tuning}.
+        \item Models tried: \texttt{ResNet18}, \texttt{ResNet50}, \texttt{EfficientNet-B0},
+              \texttt{DenseNet121}, \texttt{MobileNetV3-Large}, \texttt{ViT-B/16}.
+        \item The four listed first gave the best results.
+        \item Each image is CLAHE-normalized, replicated into 3 channels,
+              resized to $224{\times}224$ and standardized with ImageNet mean/std.
+    \end{itemize}
+\end{frame}
+
+% =====================================================================
+\section{Analytical Objectives}
+% =====================================================================
+
+\begin{frame}{Analytical objectives}
+    Our methods address several analytical tasks on the tear-desiccate images:
+    \begin{itemize}
+        \item \textbf{Pattern recognition}: identifying class-specific morphological
+              patterns (branching dendrites, dot clusters, cypress-like structures).
+        \item \textbf{Recurring structure identification}: KMeans segmentation
+              exposes recurring region types (background, figure, bright dots).
+        \item \textbf{Similarity detection}: duplicate / near-duplicate detection
+              during dataset cleaning.
+        \item \textbf{Data comparison}: inter-class comparison of gradient
+              statistics (HOG) and region statistics (KMeans).
+        \item \textbf{Feature learning}: CNN backbones learn high-level
+              representations that encode correlations between fine-grained
+              texture patterns and the underlying chronic condition.
+    \end{itemize}
+\end{frame}
+
+% =====================================================================
+\section{Expected Outcome and Results}
+% =====================================================================
+
+\begin{frame}{Task and expected outcome}
+    \begin{itemize}
+        \item \textbf{Goal}: a classifier that, given a tear-desiccate image,
+              estimates the probability that a patient has a specific
+              \textbf{chronic disease}.
+        \item \textbf{Evaluation}: a hidden test set; ranking by
+              \textbf{weighted F1-score}.
+        \item \textbf{Winner}: the team with the highest weighted F1 wins the track.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Results}
+    \centering
+    \begin{tabular}{clcc}
+        \toprule
+        \textbf{\#} & \textbf{Model} & \textbf{CV F1 (weighted)} & \textbf{Test F1 (weighted)} \\
+        \midrule
+        1 & \textbf{ResNet50} \textit{(winner)} & \textbf{0.8220} & \textbf{0.7015} \\
+        2 & ResNet18                             & 0.7973 & 0.5854 \\
+        3 & DenseNet121                          & 0.7217 & 0.5834 \\
+        4 & EfficientNet-B0                      & 0.7096 & 0.6849 \\
+        5 & KMeans ($K{=}3$) + SVM               & 0.6974 & 0.5582 \\
+        6 & HOG + SVM                            & 0.4916 & 0.5155 \\
+        \bottomrule
+    \end{tabular}
+
+    \vspace{1em}
+    \small
+    Deep transfer learning clearly outperforms classical pipelines.
+    \textbf{ResNet50} is our final submitted model.
+\end{frame}
+
+\begin{frame}{Conclusion}
+    \begin{itemize}
+        \item Careful preprocessing (ROI crop, grayscale, CLAHE, rotation augmentation,
+              outlier removal) was crucial given the small dataset.
+        \item Classical HOG/KMeans pipelines provide interpretable baselines
+              but are limited by the handcrafted features.
+        \item Transfer learning with pretrained CNNs dominates both CV and test
+              performance; \textbf{ResNet50} achieves the best weighted F1.
+        \item Future work: more data, ensembling across backbones, self-supervised
+              pretraining on raw tear images.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}
+    \vfill
+    \centering
+    {\Huge Thank you!}\\[1em]
+    {\large Questions?}\\[2em]
+    \small Luka Divjakovi\'c \quad\&\quad Veselin Roganovi\'c \\
+    HackKošice -- Pavol Jozef Šafárik University in Košice track
+    \vfill
+\end{frame}
+
+\end{document}

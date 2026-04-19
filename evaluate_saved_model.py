@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import unicodedata
 from pathlib import Path
 
 import cv2
@@ -107,6 +108,9 @@ def create_training_dataframe(train_root: Path) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     if not df.empty:
+        # macOS filesystems return NFD-normalized names; normalize to NFC so labels
+        # match checkpoint class names (which are typically stored in NFC form).
+        df["label"] = df["label"].map(lambda s: unicodedata.normalize("NFC", s))
         df = df.sort_values(["label", "relative_path"]).reset_index(drop=True)
     return df
 
@@ -289,6 +293,7 @@ def evaluate_saved_model(project_dir: Path, model_path: Path, batch_size: int) -
             raise ValueError("Expected a checkpoint dictionary in the .pth file.")
 
         class_names = list(checkpoint.get("classes") or sorted(train_df["label"].unique().tolist()))
+        class_names = [unicodedata.normalize("NFC", c) for c in class_names]
         label_encoder = LabelEncoder()
         label_encoder.fit(class_names)
         y_test = label_encoder.transform(test_part["label"])
