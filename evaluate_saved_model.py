@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import random
 from pathlib import Path
 
+import cv2
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 import torch
 import torch.nn as nn
@@ -13,17 +16,14 @@ from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms
 
-from solution_efficientnet import (
-    RANDOM_STATE,
-    create_training_dataframe,
-    load_images,
-)
-from solution_ResNET50 import (
-    IMG_SIZE,
-    IMAGENET_MEAN,
-    IMAGENET_STD,
-    load_preprocessed_gray,
-)
+from solution_ResNET50 import IMG_SIZE, IMAGENET_MEAN, IMAGENET_STD, load_preprocessed_gray
+
+
+RANDOM_STATE = 42
+TARGET_BRIGHTNESS = 0.5
+GAMMA_MIN = 0.7
+GAMMA_MAX = 1.5
+ROTATION_ANGLE = 20.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,6 +68,95 @@ def resolve_model_path(project_dir: Path, model_path: Path | None, fold: int | N
         return (project_dir / "models" / f"fold_{fold}_model.keras").resolve()
 
     return (project_dir / "models" / "final_model.keras").resolve()
+
+
+def set_seed(seed: int = RANDOM_STATE) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+
+def create_training_dataframe(train_root: Path) -> pd.DataFrame:
+    train_root = train_root.resolve()
+    if not train_root.exists() or not train_root.is_dir():
+        raise FileNotFoundError(f"TRAIN_SET folder not found: {train_root}")
+
+    class_dirs = sorted(path for path in train_root.iterdir() if path.is_dir())
+    rows = []
+    for class_dir in class_dirs:
+        label = class_dir.name
+        for file_path in sorted(class_dir.rglob("*")):
+            if file_path.is_file() and file_path.suffix.lower() == ".bmp":
+                rows.append(
+                    {
+                        "file_path": str(file_path),
+                        "relative_path": str(file_path.relative_to(train_root)),
+                        "label": label,
+                    }
+                )
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(["label", "relative_path"]).reset_index(drop=True)
+    return df
+
+
+def normalize_illumination(image: np.ndarray) -> np.ndarray:
+    """Apply per-image gamma correction to normalize global brightness."""
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    mean_intensity = float(np.mean(gray))
+    if mean_intensity <= 0.0:
+        return image
+
+    normalized_mean = float(np.clip(mean_intensity / 255.0, 1e-4, 1.0))
+    gamma = np.log(TARGET_BRIGHTNESS) / np.log(normalized_mean)
+    gamma = float(np.clip(gamma, GAMMA_MIN, GAMMA_MAX))
+
+    lut = np.array([((i / 255.0) ** gamma) * 255.0 for i in range(256)], dtype=np.float32)
+    lut = np.clip(lut, 0, 255).astype(np.uint8)
+    return cv2.LUT(image, lut)
+
+
+def load_and_preprocess(path: str) -> np.ndarray:
+    """Load image, convert to RGB, crop, resize, normalize illumination, and scale for EfficientNet."""
+    file_bytes = np.fromfile(path, dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    if img is None:
+        raise FileNotFoundError(f"Unable to read image: {path}")
+
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = img[10:532, 92:617]
+    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
+    img = normalize_illumination(img)
+    img = img.astype(np.float32)
+    img = (img / 127.5) - 1.0
+    return img
+
+
+def load_images(df: pd.DataFrame, augment: bool = False) -> np.ndarray:
+    images: list[np.ndarray] = []
+    for fp in df["file_path"].tolist():
+        img = load_and_preprocess(str(fp))
+        images.append(img)
+        if augment:
+            rotated = rotate_image((img + 1.0) * 127.5)
+            mirrored = cv2.flip(img, 1)
+            rotated_and_mirrored = cv2.flip(rotated, 1)
+            images.extend([rotated, mirrored, rotated_and_mirrored])
+    return np.stack(images, axis=0)
+
+
+def rotate_image(image: np.ndarray, angle: float = ROTATION_ANGLE) -> np.ndarray:
+    h, w = image.shape[:2]
+    center = (w / 2.0, h / 2.0)
+    matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(
+        image,
+        matrix,
+        (w, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT,
+    )
 
 
 def pick_torch_device() -> torch.device:
@@ -136,6 +225,7 @@ def evaluate_pytorch_model(model: nn.Module, loader: DataLoader, device: torch.d
 
 
 def evaluate_saved_model(project_dir: Path, model_path: Path, batch_size: int) -> None:
+    set_seed(RANDOM_STATE)
     train_set_path = (project_dir / "TRAIN_SET").resolve()
     train_df = create_training_dataframe(train_set_path)
     if train_df.empty:
